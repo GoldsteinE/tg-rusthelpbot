@@ -105,9 +105,9 @@ impl Item {
                             let url = [
                                 &raw.path.replace("::", "/"),
                                 "/",
-                                raw.ty.to_url_slug(),
+                                parent.ty.to_url_slug(),
                                 ".",
-                                &raw.name,
+                                &parent.name,
                                 ".html#",
                                 raw.ty.to_url_slug(),
                                 ".",
@@ -161,7 +161,17 @@ impl Index {
     }
 
     pub fn populate_from_rustdoc(&mut self, index: SearchIndex) {
-        let SearchIndex { items, paths, .. } = index;
+        let SearchIndex { mut items, paths, .. } = index;
+
+        // Fix empty paths
+        let mut last_path = String::new();
+        for item in &mut items {
+            if item.path.is_empty() {
+                item.path = last_path.clone();
+            }
+            last_path = item.path.clone();
+        }
+
         self.items.extend(
             items
                 .into_iter()
