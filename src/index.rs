@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::rustdoc_types::{self, ItemType, Path, SearchIndex};
+use crate::rustdoc_types::{self, FetchedSearchIndex, ItemType, Path, SearchIndex};
 
 pub type RawItem = rustdoc_types::Item;
 
@@ -13,8 +13,43 @@ pub struct Item {
     desc: String,
 }
 
+fn format_url(
+    base_url: &str,
+    path: &str,
+    ty: ItemType,
+    name: &str,
+    frag_ty: ItemType,
+    frag_name: &str,
+) -> String {
+    let ty = ty.to_url_slug();
+    let frag_ty = frag_ty.to_url_slug();
+    let capacity =
+        base_url.len() + path.len() + ty.len() + name.len() + frag_ty.len() + frag_name.len() + 10;
+    let mut result = String::with_capacity(capacity);
+    result.push_str(base_url);
+    result.push('/');
+    for part in path.split("::") {
+        result.push_str(part);
+        result.push('/');
+    }
+    result.push_str(ty);
+    result.push('.');
+    result.push_str(name);
+    result.push_str(".html#");
+    result.push_str(frag_ty);
+    result.push('.');
+    result.push_str(frag_name);
+    result
+}
+
 impl Item {
-    pub fn try_from_rustdoc(paths: &[Path], raw: RawItem) -> Option<(String, Self)> {
+    // Yes, this _is_ in fact horrible.
+    // I'll leave fold marker for you: {{{
+    pub fn try_from_rustdoc(
+        parent: Option<&Path>,
+        raw: RawItem,
+        base_url: &str,
+    ) -> Option<(String, Self)> {
         match raw.ty {
             ItemType::ExternCrate | ItemType::Primitive | ItemType::Keyword => {
                 /* We don't want to process these */
@@ -36,95 +71,77 @@ impl Item {
                 path.push_str(&name);
                 Some((path, Item { ty, url, desc }))
             }
-            _ => match raw.parent {
-                Some(parent_idx) => {
-                    let parent = if let Some(parent) = paths.get(parent_idx) {
-                        parent
-                    } else {
-                        log::warn!("failed to get parent_idx {} from {:?}", parent_idx, paths);
-                        return None;
-                    };
-                    match (raw.ty, parent.ty) {
-                        (_, ItemType::Primitive) => {
-                            let path = [&parent.name, "::", &raw.name].concat();
-                            let url = [
-                                &raw.path.replace("::", "/"),
-                                "/primitive.",
-                                &parent.name,
-                                ".html#",
-                                &raw.ty.to_url_slug(),
-                                ".",
-                                &raw.name,
-                            ]
-                            .concat();
-                            Some((
-                                path,
-                                Item {
-                                    ty: raw.ty,
-                                    url,
-                                    desc: raw.desc,
-                                },
-                            ))
-                        }
-                        (ItemType::Structfield, ItemType::Variant) => {
-                            let (path, enum_name) = match raw
-                                .path
-                                .rfind("::")
-                                .map(|i| (&raw.path[..i], &raw.path[i + 2..]))
-                            {
-                                Some(x) => x,
-                                None => {
-                                    log::warn!("failed to split structfield variant");
-                                    return None;
-                                }
-                            };
-                            let full_path =
-                                [&raw.path, "::", &parent.name, "::", &raw.name].concat();
-                            let url = [
-                                &path.replace("::", "/"),
-                                "/variant.",
-                                &raw.name,
-                                ".html#variant.",
-                                enum_name,
-                                ".field.",
-                                &raw.name,
-                            ]
-                            .concat();
-                            Some((
-                                full_path,
-                                Item {
-                                    ty: raw.ty,
-                                    url,
-                                    desc: raw.desc,
-                                },
-                            ))
-                        }
-                        _ => {
-                            let full_path =
-                                [&raw.path, "::", &parent.name, "::", &raw.name].concat();
-                            let url = [
-                                &raw.path.replace("::", "/"),
-                                "/",
-                                parent.ty.to_url_slug(),
-                                ".",
-                                &parent.name,
-                                ".html#",
-                                raw.ty.to_url_slug(),
-                                ".",
-                                &raw.name,
-                            ]
-                            .concat();
-                            Some((
-                                full_path,
-                                Item {
-                                    ty: raw.ty,
-                                    url,
-                                    desc: raw.desc,
-                                },
-                            ))
-                        }
+            _ => match parent {
+                Some(parent) => match (raw.ty, parent.ty) {
+                    (_, ItemType::Primitive) => {
+                        let path = [&parent.name, "::", &raw.name].concat();
+                        let url = format_url(
+                            base_url,
+                            &path,
+                            ItemType::Primitive,
+                            &parent.name,
+                            raw.ty,
+                            &raw.name,
+                        );
+                        Some((
+                            path,
+                            Item {
+                                ty: raw.ty,
+                                url,
+                                desc: raw.desc,
+                            },
+                        ))
                     }
-                }
+                    (ItemType::Structfield, ItemType::Variant) => {
+                        let (path, enum_name) = match raw
+                            .path
+                            .rfind("::")
+                            .map(|i| (&raw.path[..i], &raw.path[i + 2..]))
+                        {
+                            Some(x) => x,
+                            None => {
+                                log::warn!("failed to split structfield variant");
+                                return None;
+                            }
+                        };
+                        let full_path = [&raw.path, "::", &parent.name, "::", &raw.name].concat();
+                        let url = format_url(
+                            base_url,
+                            &path,
+                            ItemType::Variant,
+                            &raw.name,
+                            ItemType::Variant,
+                            &format!("{}.field.{}", enum_name, raw.name),
+                        );
+                        Some((
+                            full_path,
+                            Item {
+                                ty: raw.ty,
+                                url,
+                                desc: raw.desc,
+                            },
+                        ))
+                    }
+                    _ => {
+                        let full_path = [&raw.path, "::", &parent.name, "::", &raw.name].concat();
+                        let url = format_url(
+                            base_url,
+                            &raw.path,
+                            parent.ty,
+                            &parent.name,
+                            raw.ty,
+                            &raw.name,
+                        );
+                        Some((
+                            full_path,
+                            Item {
+                                ty: raw.ty,
+                                url,
+                                desc: raw.desc,
+                            },
+                        ))
+                    }
+                },
                 None => {
                     let path = [&raw.path, "::", &raw.name].concat();
                     let url = [
@@ -148,6 +165,7 @@ impl Item {
             },
         }
     }
+    // }}}
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -160,8 +178,13 @@ impl Index {
         Self::default()
     }
 
-    pub fn populate_from_rustdoc(&mut self, index: SearchIndex) {
-        let SearchIndex { mut items, paths, .. } = index;
+    pub fn populate_from_rustdoc(&mut self, index: FetchedSearchIndex) {
+        let FetchedSearchIndex {
+            base_url,
+            index: SearchIndex {
+                mut items, paths, ..
+            },
+        } = index;
 
         // Fix empty paths
         let mut last_path = String::new();
@@ -175,11 +198,24 @@ impl Index {
         self.items.extend(
             items
                 .into_iter()
-                .filter_map(|it| Item::try_from_rustdoc(&paths, it)),
+                .filter_map(|it| {
+                    if let Some(parent_idx) = it.parent {
+                        let parent = if let Some(parent) = paths.get(parent_idx) {
+                            parent
+                        } else {
+                            log::warn!("parent idx {} is not in list", parent_idx);
+                            return None;
+                        };
+                        Some((Some(parent), it))
+                    } else {
+                        Some((None, it))
+                    }
+                })
+                .filter_map(|(parent, it)| Item::try_from_rustdoc(parent, it, &base_url)),
         );
     }
 
-    pub fn from_rustdoc(index: SearchIndex) -> Self {
+    pub fn from_rustdoc(index: FetchedSearchIndex) -> Self {
         let mut result = Self::new();
         result.populate_from_rustdoc(index);
         result

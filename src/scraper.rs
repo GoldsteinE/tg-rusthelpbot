@@ -6,7 +6,7 @@ use color_eyre::eyre::{self, WrapErr as _};
 use once_cell::sync::OnceCell;
 use rusty_v8 as v8;
 
-use crate::rustdoc_types::SearchIndex;
+use crate::rustdoc_types::{FetchedSearchIndex, SearchIndex};
 
 static V8_INIT: OnceCell<()> = OnceCell::new();
 // It's probably better to create these via v8, but I dunno how to
@@ -72,7 +72,14 @@ impl Scraper {
     pub async fn fetch_index_by_url(
         &mut self,
         url: impl reqwest::IntoUrl,
-    ) -> eyre::Result<HashMap<String, SearchIndex>> {
+    ) -> eyre::Result<HashMap<String, FetchedSearchIndex>> {
+        let url = url.into_url()?;
+        let mut base_url = url.clone();
+        base_url
+            .path_segments_mut()
+            .map_err(|()| eyre::eyre!("invalid URL passed to fetch_index_by_url(): {}", url))?
+            .pop();
+        let base_url = base_url.to_string();
         let js_string = [JS_PRELUDE, &self.http.get(url).send().await?.text().await?].concat();
         let scope = &mut v8::HandleScope::new(&mut self.js_engine);
         let context = v8::Context::new(scope);
@@ -91,6 +98,19 @@ impl Scraper {
         let search_index = v8::json::stringify(scope, search_index_var)
             .ok_or_else(|| eyre::eyre!("failed to stringify searchIndex"))?;
         let search_index_json = search_index.to_rust_string_lossy(scope);
-        serde_json::from_str(&search_index_json).wrap_err("failed to parse search index JSON")
+        let indices: HashMap<String, SearchIndex> = serde_json::from_str(&search_index_json)
+            .wrap_err("failed to parse search index JSON")?;
+        Ok(indices
+            .into_iter()
+            .map(|(k, index)| {
+                (
+                    k,
+                    FetchedSearchIndex {
+                        base_url: base_url.clone(),
+                        index,
+                    },
+                )
+            })
+            .collect())
     }
 }

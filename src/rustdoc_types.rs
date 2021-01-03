@@ -89,3 +89,9 @@ pub struct SearchIndex {
     #[serde(rename = "p")]
     pub paths: Vec<Path>,
 }
+
+#[derive(Debug, Clone)]
+pub struct FetchedSearchIndex {
+    pub index: SearchIndex,
+    pub base_url: String,
+}
